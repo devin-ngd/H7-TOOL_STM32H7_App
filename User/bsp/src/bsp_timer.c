@@ -3,8 +3,8 @@
 *
 *    模块名称 : 定时器模块
 *    文件名称 : bsp_timer.c
-*    版    本 : V1.5
-*    说    明 : 配置systick定时器作为系统滴答定时器。缺省定时周期为1ms。
+*    版    本 : V1.7
+*    说    明 : 配置systik定时器作为系统滴答定时器。缺省定时周期为1ms。
 *
 *                实现了多个软件定时器供主程序使用(精度1ms)， 可以通过修改 TMR_COUNT 增减定时器个数
 *                实现了ms级别延迟函数（精度1ms） 和us级延迟函数
@@ -19,7 +19,9 @@
 *        V1.4    2015-05-22 armfly  完善 bsp_InitHardTimer() ，增加条件编译选择TIM2-5
 *        V1.5    2018-11-26 armfly  s_tTmr赋初值0; 增加g_ucEnableSystickISR变量避免HAL提前打开systick中断
 *                                   引起的异常。
-*        V1.6    2020-02-19 armfly  g_iRunTime 运行时间改用 TIMx->CNT 实现，避免1ms中断丢失导致时长不准
+*        V1.6    2020-11-19 armfly  g_iRunTime 运行时间改用 TIMx->CNT 实现，避免1ms中断丢失导致时长不准
+*        V1.7    2020-12-09 armfly  增加bsp_GetRunTimeUs(),bsp_CheckRunTime()
+*
 *    Copyright (C), 2015-2030, 安富莱电子 www.armfly.com
 *
 *********************************************************************************************************
@@ -37,6 +39,7 @@
 #ifdef USE_TIM2
 #define TIM_HARD TIM2
 #define RCC_TIM_HARD_CLK_ENABLE()   __HAL_RCC_TIM2_CLK_ENABLE()
+#define RCC_TIM_HARD_CLK_DISABLE()   __HAL_RCC_TIM2_CLK_DISABLE()
 #define TIM_HARD_IRQn               TIM2_IRQn
 #define TIM_HARD_IRQHandler         TIM2_IRQHandler
 #endif
@@ -62,7 +65,7 @@
 #define TIM_HARD_IRQHandler TIM5_IRQHandler
 #endif
 
-__IO uint32_t g_uiTimeHighWord = 0; 
+
 
 /* 保存 TIM定时中断到后执行的回调函数指针 */
 static void (*s_TIM_CallBack1)(void);
@@ -77,11 +80,13 @@ static volatile uint8_t s_ucTimeOutFlag = 0;
 /* 定于软件定时器结构体变量 */
 static SOFT_TMR s_tTmr[TMR_COUNT] = {0};
 
+
 /*
     全局运行时间，单位1ms
     最长可以表示 24.85天，如果你的产品连续运行时间超过这个数，则必须考虑溢出问题
 */
-__IO int32_t g_iRunTime = 0;
+
+__IO uint32_t g_uiTimeHighWord = 0; 
 
 static __IO uint8_t g_ucEnableSystickISR = 0; /* 等待变量初始化 */
 
@@ -328,7 +333,7 @@ void bsp_StartTimer(uint8_t _id, uint32_t _period)
 *    函 数 名: bsp_StartAutoTimer
 *    功能说明: 启动一个自动定时器，并设置定时周期。
 *    形    参: _id     : 定时器ID，值域【0,TMR_COUNT-1】。用户必须自行维护定时器ID，以避免定时器ID冲突。
-*              _period : 定时周期，单位10ms
+*              _period : 定时周期，单位1ms
 *    返 回 值: 无
 *********************************************************************************************************
 */
@@ -408,26 +413,23 @@ uint8_t bsp_CheckTimer(uint8_t _id)
 /*
 *********************************************************************************************************
 *    函 数 名: bsp_GetRunTime
-*    功能说明: 获取CPU运行时间，单位1ms。最长可以表示 24.85天，如果你的产品连续运行时间超过这个数，则必须考虑溢出问题
+*    功能说明: 获取CPU运行时间，单位1ms。最长可以表示 2147483647ms = 24.85天
+*              如果你的产品连续运行时间超过这个数，则必须考虑溢出问题
 *    形    参:  无
 *    返 回 值: CPU运行时间，单位1ms
 *********************************************************************************************************
 */
 int32_t bsp_GetRunTime(void)
 {
-//    int32_t runtime;
-
-//    DISABLE_INT(); /* 关中断 */
-
-//    runtime = g_iRunTime;   /* 这个变量在Systick中断中被改写，因此需要关中断进行保护 */
-
-//    ENABLE_INT(); /* 开中断 */
-
-//    return runtime;
+    uint64_t tus;
+    int32_t ms;
     
-    g_iRunTime = TIM_HARD->CNT / 1000;
+    tus = bsp_GetRunTimeUs();
     
-    return g_iRunTime;
+    tus = (tus / 1000) & 0x7FFFFFFF;  /* 取低4字节 */
+    ms = tus;
+    
+    return ms;
 }
 
 /*
@@ -440,12 +442,83 @@ int32_t bsp_GetRunTime(void)
 */
 int32_t bsp_CheckRunTime(int32_t _LastTime)
 {
+    uint64_t tus;    
     int32_t now_time;
     int32_t time_diff;
 
-//    DISABLE_INT();                 /* 关中断 */
-    now_time = TIM_HARD->CNT / 1000; 
-//    ENABLE_INT();                  /* 开中断 */
+    tus = bsp_GetRunTimeUs();
+    tus = tus / 1000;
+
+    now_time = tus & 0x7FFFFFFF;  /* 取低4字节 */
+    
+    if (now_time >= _LastTime)
+    {
+        time_diff = now_time - _LastTime;
+    }
+    else
+    {
+        time_diff = 0x7FFFFFFF - _LastTime + now_time + 1;
+    }
+
+    return time_diff;
+}
+
+/*
+*********************************************************************************************************
+*    函 数 名: bsp_SubRunTime
+*    功能说明: 计算逝去时间， 差值范围 0 - 24.85天. 
+*    形    参:  _T0: 时间1， _T1: 比T0晚的时间
+*    返 回 值: 时间差，单位1ms
+*********************************************************************************************************
+*/
+int32_t bsp_SubRunTime(int32_t _T0, int32_t _T1)
+{
+    int32_t time_diff;
+
+    if (_T1 >= _T0)
+    {
+        time_diff = _T1 - _T0;
+    }
+    else
+    {
+        time_diff = 0x7FFFFFFF - _T0 + _T1 + 1;
+    }
+
+    return time_diff;
+}
+
+/*
+*********************************************************************************************************
+*    函 数 名: bsp_GetRunTimeUs
+*    功能说明: 获取CPU运行时间，单位1us。最长可以表示 292471年
+*              如果你的产品连续运行时间超过这个数，则必须考虑溢出问题
+*    形    参:  无
+*    返 回 值: CPU运行时间，单位1us.  
+*********************************************************************************************************
+*/
+uint64_t bsp_GetRunTimeUs(void)
+{
+    /* 
+        7FFF FFFF FFFF FFFF  = 9223372036854775807 us = 9223372036854 秒
+        = 2562047788 小时 = 106751991 天 = 292471年
+    */
+    return TIM_HARD->CNT + (g_uiTimeHighWord * 0x100000000);
+}
+
+/*
+*********************************************************************************************************
+*    函 数 名: bsp_CheckRunTimeUs
+*    功能说明: 计算当前运行时间和给定时刻之间的差值。处理了计数器循环。
+*    形    参:  _LastTime 过去的某个时刻
+*    返 回 值: 当前时间和过去时间的差值，单位1us
+*********************************************************************************************************
+*/
+int64_t bsp_CheckRunTimeUs(int64_t _LastTime)
+{
+    int64_t now_time;
+    int64_t time_diff;
+
+    now_time = bsp_GetRunTimeUs();
 
     if (now_time >= _LastTime)
     {
@@ -453,7 +526,7 @@ int32_t bsp_CheckRunTime(int32_t _LastTime)
     }
     else
     {
-        time_diff = 0x7FFFFFFF - _LastTime + now_time;
+        time_diff = now_time - _LastTime;   /* 负数 */
     }
 
     return time_diff;
@@ -462,7 +535,7 @@ int32_t bsp_CheckRunTime(int32_t _LastTime)
 /*
 *********************************************************************************************************
 *    函 数 名: bsp_DelayNS
-*    功能说明: us级延迟。 必须在systick定时器启动后才能调用此函数。
+*    功能说明: ns级延迟。 必须在systick定时器启动后才能调用此函数。
 *    形    参: n : 延迟长度，单位NS
 *    返 回 值: 无
 *********************************************************************************************************
@@ -551,7 +624,9 @@ void bsp_InitHardTimer(void)
     uint32_t usPeriod;
     uint16_t usPrescaler;
     uint32_t uiTIMxCLK;
-    TIM_TypeDef* TIMx = TIM_HARD;
+    TIM_TypeDef* TIMx = TIM_HARD;        
+    
+    RCC_TIM_HARD_CLK_DISABLE();     /* 禁止TIM时钟 */
     
     RCC_TIM_HARD_CLK_ENABLE();      /* 使能TIM时钟 */
     
@@ -611,13 +686,19 @@ void bsp_InitHardTimer(void)
     TimHandle.Init.ClockDivision     = 0;
     TimHandle.Init.CounterMode       = TIM_COUNTERMODE_UP;
     TimHandle.Init.RepetitionCounter = 0;
-    TimHandle.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-    
+    TimHandle.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;     
     if (HAL_TIM_Base_Init(&TimHandle) != HAL_OK)
     {
         Error_Handler(__FILE__, __LINE__);
     }
 
+    /* 必须先清除这些标志，再使能中断 */    
+    TIMx->SR = (uint16_t)~TIM_IT_UPDATE;   /* 清除UPDATE中断标志 */
+    TIMx->SR = (uint16_t)~TIM_IT_CC1;   /* 清除CC1中断标志 */ 
+    TIMx->SR = (uint16_t)~TIM_IT_CC2;   /* 清除CC2中断标志 */ 
+    TIMx->SR = (uint16_t)~TIM_IT_CC3;   /* 清除CC3中断标志 */ 
+    TIMx->SR = (uint16_t)~TIM_IT_CC4;   /* 清除CC4中断标志 */ 
+    
     /* 配置定时器中断，给CC捕获比较中断使用 */
     {
         HAL_NVIC_SetPriority(TIM_HARD_IRQn, 0, 2);
@@ -627,9 +708,7 @@ void bsp_InitHardTimer(void)
     /* 启动定时器 */
     HAL_TIM_Base_Start(&TimHandle);
     
-    /* 启动溢出中断，用于运行时间计数, us单位 */    
-    TIMx->SR = (uint16_t)~TIM_IT_UPDATE;   /* 清除UPDATE中断标志 */
-    TIMx->DIER |= TIM_IT_UPDATE;           /* 使能UPDATE中断 */    
+    TIMx->DIER |= TIM_IT_UPDATE;           /* 使能UPDATE中断 */     
 }
 
 /*
@@ -709,7 +788,7 @@ void TIM_HARD_IRQHandler(void)
 
     timesr = TIMx->SR;
     
-    /* 溢出中断，用于CPU运行时间计算. 65.535ms进入一次 */
+    /* 溢出中断，用于CPU运行时间计算.  */
     if (timesr & TIM_IT_UPDATE)
     {
         TIMx->SR = (uint16_t)~TIM_IT_UPDATE;

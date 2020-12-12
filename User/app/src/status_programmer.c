@@ -13,12 +13,8 @@
 *
 *********************************************************************************************************
 */
-#include "bsp.h"
-#include "main.h"
-#include "file_lib.h"
-#include "lua_if.h"
-#include "prog_if.h"
-#include "lcd_menu.h"
+#include "includes.h"
+
 #include "SW_DP_Multi.h"
 
 /* 三个按钮 */
@@ -97,6 +93,7 @@ static void DispProgCounter(void);
 extern void sysTickInit(void);
 extern uint8_t swd_init_debug(void);
 extern uint8_t swd_read_idcode(uint32_t *id);
+extern uint8_t swd_init(void);
 
 /*
 *********************************************************************************************************
@@ -186,7 +183,8 @@ void status_ProgWork(void)
             uint16_t len;
             uint8_t line = 0;
             
-            lua_DownLoadFile(g_tProg.FilePath);  /* 重新初始化lua环境，并装载lua文件 */  
+            lua_DownLoadFile(g_tProg.FilePath);  /* 重新初始化lua环境，并装载lua文件到内存，不执行 */  
+            lua_RunLuaProg();   /* 执行lua */
             
             /* 从lua文件中获得注释字符串Note01 */
             lua_getglobal(g_Lua, "Note01");    
@@ -238,10 +236,58 @@ void status_ProgWork(void)
             ReadProgIniFile(g_tProg.FilePath, &g_tProgIni);
             DispProgCounter();
         }
+//        else
+//        {
+//            LCD_DispStr(5 + 3,      5 + 3,      "未选择文件", &tFontText);   
+//            LCD_DispStr(5 + 3,      5 + 3 + 30, "", &tFontText);                
+//        }
+        
+        /* 当前烧录模式 */
+        if (g_gMulSwd.MultiMode == 0) PG_PrintText("单路模式"); 
+        else if (g_gMulSwd.MultiMode == 1) PG_PrintText("多路模式:1路");
+        else if (g_gMulSwd.MultiMode == 2) PG_PrintText("多路模式:1-2路");
+        else if (g_gMulSwd.MultiMode == 3) PG_PrintText("多路模式:1-3路"); 
+        else if (g_gMulSwd.MultiMode == 4) PG_PrintText("多路模式:1-4路");         
+    }     
+         
+//    /* 配置RS485串口，驱动RS485数码管显示状态 */
+//    {
+//        bsp_SetUartParam(COM_RS485, 9600, UART_PARITY_NONE, UART_WORDLENGTH_8B, UART_STOPBITS_1);
+//        
+//        if (g_gMulSwd.MultiMode == 0)
+//        {
+//            comSendBuf(COM_RS485, "$001,-   #", 10);
+//        }
+//        else
+//        {
+//            if (g_gMulSwd.MultiMode == 1)
+//            {
+//                comSendBuf(COM_RS485, "$001,-   #", 10);
+//            }
+//            else if (g_gMulSwd.MultiMode == 2)
+//            {
+//                comSendBuf(COM_RS485, "$001,--  #", 10);
+//            }
+//            else if (g_gMulSwd.MultiMode == 3)
+//            {
+//                comSendBuf(COM_RS485, "$001,--- #", 10);
+//            }
+//            else if (g_gMulSwd.MultiMode == 4)
+//            {
+//                comSendBuf(COM_RS485, "$001,----#", 10);
+//            }
+//        }
+//    }
+    
+    /* V1.36 解决第一次上电第1次烧录失败问题 */
+    {
+        if (g_gMulSwd.MultiMode == 0)
+        {
+            MUL_PORT_SWD_SETUP();
+        }
         else
         {
-            LCD_DispStr(5 + 3,      5 + 3,      "未选择文件", &tFontText);   
-            LCD_DispStr(5 + 3,      5 + 3 + 30, "", &tFontText);                
+            swd_init();
         }
     }
     
@@ -302,24 +348,37 @@ void status_ProgWork(void)
             
             /* 读ini配置文件 */
             ReadProgIniFile(g_tProg.FilePath, &g_tProgIni);
-            DispProgCounter();
-            
+            DispProgCounter();  
+
             /* 判断剩余次数 */
             {
-                ReadProgIniFile(g_tProg.FilePath, &g_tProgIni); /* 读ini文件，每个lua对应一个ini文件，用于记录编程次数 */
+                uint8_t want;
                 
+                if (g_gMulSwd.MultiMode > 0)   /* 多路模式 */
+                {
+                    want = g_tParam.MultiProgMode;
+                }
+                else
+                {
+                    want = 1;
+                }
+                    
                 if (g_tProgIni.Locked == 1)
                 {
+                    BEEP_Start(5, 5, 3);    /* 错误提示音 */
+                    PG_PrintText("烧录功能已锁死");
                     continue;
                 }
                 
-                if (g_tProgIni.ProgramLimit == 1 && g_tProgIni.ProgramLimit <= g_tProgIni.ProgrammedCount)
-                {                  
+                if (g_tProgIni.ProgramLimit > 0 && g_tProgIni.ProgrammedCount + want > g_tProgIni.ProgramLimit)
+                {           
+                    BEEP_Start(5, 5, 3);    /* 错误提示音 */
+                    PG_PrintText("剩余次数不足");
                     continue;
                 }
-            }                       
+            }               
 
-            g_tProg.Time = bsp_GetRunTime();    /* 记录开始时间 */
+            g_tProg.Time = bsp_GetRunTime();    /* 记录开始时间, 在start_prog()脚本中会重置开始时间 */
             g_tProg.Err = 100;
             if (g_Lua > 0)
             {
@@ -371,8 +430,43 @@ void status_ProgWork(void)
                         g_gMulSwd.Active[3] = 1;
                     }                                
                 }
+                
+                
+//                /* RS485数码管显示烧录进行中 */
+//                {
+//                    char str[16];
+//                    
+//                    if (g_gMulSwd.MultiMode == 0)   /* 单路模式 */
+//                    {                        
+//                        strcpy(str, "$001,-.   #");
+//                    }
+//                    else /* 多路模式 */
+//                    {
+//                        uint8_t i;
+//                        
+//                        strcpy(str, "$001,");
+//                        for (i = 0; i < 4; i++)
+//                        {
+//                            if (g_gMulSwd.Active[i] == 1)
+//                            {
+//                                strcat(str, "-.");
+//                            }
+//                            else
+//                            {
+//                                strcat(str, " ");                           
+//                            }                            
+//                        }
+//                        strcat(str, "#");
+//                    }      
+//                    comSendBuf(COM_RS485, (uint8_t *)str, strlen(str));                    
+//                }  
             
-                lua_do("ret_str = start_prog()");   /* 执行编程，阻塞只到编程完毕 */
+                bsp_LcdSleepEnable(0);      /* 临时屏蔽LCD背光控制，应对烧录时间大于1分钟的情况，避免中途关闭背光 */    
+                
+                lua_do("ret_str = start_prog()");   /* 执行编程，阻塞只到编程完毕 */         
+
+                bsp_LcdSleepEnable(1);      /* 恢复LCD背光控制 */                    
+
                 {                    
                     lua_getglobal(g_Lua, "ret_str"); 
                     if (lua_isstring(g_Lua, -1))
@@ -391,14 +485,64 @@ void status_ProgWork(void)
                     }
                     else
                     {
-                        g_tProg.Err = 1;
+                        g_tProg.Err = 1;                        
                     }
-                }
+                } 
 
+                /* RS485数码管显示烧录结果 */
+//                {
+//                    char str[8];
+//                    
+//                    if (g_gMulSwd.MultiMode == 0)   /* 单路模式 */
+//                    {                        
+//                        if (g_tProg.Err == 0)
+//                        {
+//                            strcpy(str, "$001,o   #");
+//                        }
+//                        else
+//                        {
+//                            strcpy(str, "$001,E   #");
+//                        }
+//                    }
+//                    else /* 多路模式 */
+//                    {
+//                        uint8_t i;
+//                        
+//                        strcpy(str, "$001,");
+//                        for (i = 0; i < 4; i++)
+//                        {
+//                            if (g_gMulSwd.Active[i] == 1)
+//                            {
+//                                if (g_gMulSwd.Error[i] != 0)
+//                                {
+//                                    strcat(str, "E");
+//                                }
+//                                else
+//                                {
+//                                    if (g_tProg.Err == 1)
+//                                    {
+//                                        strcat(str, "-");
+//                                    }
+//                                    else
+//                                    {
+//                                        strcat(str, "o");
+//                                    }
+//                                }
+//                            }
+//                            else
+//                            {
+//                                strcat(str, " ");                           
+//                            }                            
+//                        }
+//                        strcat(str, "#");
+//                    }      
+//                    comSendBuf(COM_RS485, (uint8_t *)str, strlen(str));         
+//                }                
+                
                 /* 编程完毕 */                
                 if (g_tProg.Err == 0)
                 {
-                    PERIOD_Start(&g_tRunLed, 1000, 0, 0);   /* 烧录成功 LED常亮 */
+                    PERIOD_Start(&g_tRunLed, 1000, 0, 0);   /* 烧录成功 LED常亮 */                
                     
                     /* 累加计数器并写入ini文件 */
                     if (g_gMulSwd.MultiMode > 0)
@@ -442,7 +586,7 @@ void status_ProgWork(void)
                 }  
                 else    /* 烧录失败 */
                 {
-                    PERIOD_Stop(&g_tRunLed);        /* 烧录失败，LED熄灭 */
+                    PERIOD_Stop(&g_tRunLed);        /* 烧录失败，LED熄灭 */                   
                     
                     /* 连续自动烧录 */
                     if (g_tProg.AutoStart == 1)
@@ -475,8 +619,8 @@ void status_ProgWork(void)
         if (g_tProg.AutoStart == 1)
         {
             if (ucAutoState == 1)           /* 连续烧录状态，等待移除 */
-            {
-                if (bsp_CheckRunTime(iDetectTime) > 50)
+            {                
+                if (bsp_CheckRunTime(iDetectTime) > 30)
                 {
                     iDetectTime = bsp_GetRunTime();
                     if (WaitChipRemove())           /* 等待芯片移除 */
@@ -507,7 +651,7 @@ void status_ProgWork(void)
             }
             else if (ucAutoState == 2)              /* 连续烧录状态，等待插入 */
             {
-                if (bsp_CheckRunTime(iDetectTime) > 50)
+                if (bsp_CheckRunTime(iDetectTime) > 30)
                 {
                     iDetectTime = bsp_GetRunTime();
                                    
@@ -517,6 +661,7 @@ void status_ProgWork(void)
                         {
                             ucAutoState = 0;
                             fRunOnce = 1;
+                            bsp_PutKey(KEY_DB_S);   /* 任意发一个本状态无用的按键消息，重开背光 */
                         }
                     }
                     else
@@ -534,24 +679,45 @@ void status_ProgWork(void)
                     }
                 }
             }
+            else
+            {
+                ;
+            }
+        }
+        else
+        {
+            ;
         }
         
-        if (g_gMulSwd.MultiMode > 0)   /* 多路模式 - 检测D1触发信号 */            
+        /* 处理消息. 和PC机或lua程序传递信息 */
         {
-            static uint8_t s_LastState = 2;
-            uint8_t NowState;
-
-            NowState = EIO_GetInputLevel(EIO_D1);
-            if (s_LastState == 1)
+            static int32_t s_time = 0;
+            
+            MSG_T msg;            
+            
+            if (bsp_GetMsg(&msg))
             {
-                if (NowState == 0)
+                switch (msg.MsgCode)
                 {
-                    bsp_PutKey(KEY_UP_C);   /* 模拟用户按键 */
+                    case MSG_PG_START:
+                        fRunOnce = 1;
+                        bsp_PutKey(KEY_DB_S);   /* 任意发一个本状态无用的按键消息，重开背光 */
+                        break;
+                    
+                    case MSG_PG_ABORT:
+                        break;
                 }
             }
-            s_LastState = NowState;
+            
+            if (bsp_CheckRunTime(s_time) > 20)
+            {
+                s_time = bsp_GetRunTime();
+                lua_do("if mi_idle ~= nil then mi_idle() end");   /* 烧录空闲时刻，检测启动键，通过lua实现 */
+            }
         }
         
+          
+ 
         ucKeyCode = bsp_GetKey(); /* 读取键值, 无键按下时返回 KEY_NONE = 0 */
         if (ucKeyCode != KEY_NONE)
         {
@@ -598,8 +764,19 @@ void status_ProgWork(void)
                     }	                
                     break;
                 
-                case KEY_LONG_DOWN_C:    /* C键长按 */
-                    g_MainStatus = MS_EXTEND_MENU1;
+                case KEY_LONG_DOWN_C:    /* C键长按 */                    
+                    if (g_tParam.StartRun == 1)
+                    {
+                        g_MainStatus = MS_PROG_WORK;
+                    }
+                    else if (g_tParam.StartRun == 2)
+                    {
+                        g_MainStatus = MS_PROG_WORK;
+                    }
+                    else
+                    {
+                        g_MainStatus = MS_EXTEND_MENU1;
+                    }
                     break;
 
                 default:
@@ -728,6 +905,7 @@ void status_ProgSetting(void)
         g_tMenuProg1.Font.Space = 0;
         g_tMenuProg1.RollBackEn = 1;  /* 允许回滚 */
         g_tMenuProg1.GBK = 0;
+        g_tMenuProg1.ActiveBackColor = 0;   /* 选中行背景色ID */
         LCD_InitMenu(&g_tMenuProg1, (char **)g_MenuProg1_Text); /* 初始化菜单结构 */
     }    
     LCD_DispMenu(&g_tMenuProg1);
@@ -760,7 +938,12 @@ void status_ProgSetting(void)
                 case KEY_LONG_DOWN_S: /* S键 上 */
                     if (g_tMenuProg1.Cursor == 0)      /* 修改编程参数 */
                     {
-                        g_MainStatus = MS_PROG_MODIFY_PARAM;
+                        //g_MainStatus = MS_PROG_MODIFY_PARAM);;
+                        
+                        ModifyParam(MODIFY_PARAM_PROG);
+                        LCD_DispMenu(&g_tMenuProg1);
+                        /* 通知lua程序，多路编程参数变化 */
+                        lua_do("MULTI_MODE = pg_read_c_var(\"MultiProgMode\")");
                     }                    
                     else if (g_tMenuProg1.Cursor == 1)      /* 本次计数清零 */
                     {
@@ -796,7 +979,21 @@ void status_ProgSetting(void)
 
                 case KEY_LONG_DOWN_C: /* C键长按 */
                     PlayKeyTone();
-                    g_MainStatus = MS_PROG_WORK;
+                
+                    if (g_tParam.StartRun == 1)
+                    {
+                        g_gMulSwd.MultiMode = 0;        /* 单路烧录 */
+                        g_MainStatus = MS_PROG_WORK;
+                    }
+                    else if (g_tParam.StartRun == 2)
+                    {
+                        g_gMulSwd.MultiMode = g_tParam.MultiProgMode; 
+                        g_MainStatus = MS_PROG_WORK;    /* 多路烧录 */
+                    }
+                    else
+                    {
+                        g_MainStatus = MS_PROG_WORK;
+                    }
                     break;
 
                 default:
@@ -814,7 +1011,7 @@ void status_ProgSetting(void)
 *    返 回 值: 无
 *********************************************************************************************************
 */
-#define PARAM_NUM  3
+#define PARAM_NUM  4
 void status_ProgModifyParam(void)
 {
     uint8_t ucKeyCode; /* 按键代码 */
@@ -869,7 +1066,7 @@ void status_ProgModifyParam(void)
                 }                               
             }   
             
-            /* 第2个参数 - 复位类型 */
+            /* 第2个参数 - 保留 */
             {
                 if (cursor == 1)
                 {
@@ -879,24 +1076,10 @@ void status_ProgModifyParam(void)
                 {
                     active = 0;
                 }
-                if (g_tParam.ResetType == 0)
-                {               
-                    sprintf(buf, "由lua决定");
-                    DispParamBar(1, "复位类型:", buf, active);
-                }
-                else if (g_tParam.ResetType == 1)
-                {
-                    sprintf(buf, "强制硬件");
-                    DispParamBar(1, "复位类型:", buf, active);
-                }    
-                else
-                {
-                    sprintf(buf, "强制软件");
-                    DispParamBar(1, "复位类型:", buf, active);
-                }                 
-            }
-            
- 
+                
+                sprintf(buf, "%d", g_tParam.FactoryId);
+                DispParamBar(1, "工厂代码:", buf, active);             
+            }           
 
              /* 第3个参数 - 编程参数3  */
             {
@@ -908,10 +1091,35 @@ void status_ProgModifyParam(void)
                 {
                     active = 0;
                 }
-           
-                DispParamBar(2, "参数3:", "保留", active);
+                
+                sprintf(buf, "%d", g_tParam.ToolSn);
+                DispParamBar(2, "烧录器编号:", buf, active);
             }      
-            
+ 
+            /* 第4个参数 - 开机启动  */
+            {
+                if (cursor == 3)
+                {
+                    active = 1;       
+                }
+                else 
+                {
+                    active = 0;
+                }
+                
+                if (g_tParam.StartRun == 1)
+                {
+                    DispParamBar(3, "开机启动:", "单路烧录", active);
+                }
+                else if (g_tParam.StartRun == 2)
+                {
+                    DispParamBar(3, "开机启动:", "多路烧录", active);
+                }
+                else
+                {
+                    DispParamBar(3, "开机启动:", "缺省", active);
+                }                 
+            }            
         }
         
         ucKeyCode = bsp_GetKey(); /* 读取键值, 无键按下时返回 KEY_NONE = 0 */
@@ -934,23 +1142,47 @@ void status_ProgModifyParam(void)
                     }
                     else if (cursor == 1)
                     {
-                        if (g_tParam.ResetType  == 0)
+                        if (g_tParam.FactoryId < 1 || g_tParam.FactoryId > 99)
                         {
-                            g_tParam.ResetType = 1;
+                            g_tParam.FactoryId = 1;
                         }
-                        else if (g_tParam.ResetType  == 1)
-                        {
-                            g_tParam.ResetType = 2;
-                        } 
                         else
                         {
-                            g_tParam.ResetType = 0;
-                        }                        
+                            if (g_tParam.FactoryId < 99)
+                            {
+                                g_tParam.FactoryId++;
+                            }
+                            else
+                            {
+                                g_tParam.FactoryId = 1;
+                            }
+                        }                     
                     }     
                     else if (cursor == 2)
                     {
-
-                    }                  
+                        if (g_tParam.ToolSn < 1 || g_tParam.ToolSn > 99)
+                        {
+                            g_tParam.ToolSn = 1;
+                        }
+                        else
+                        {
+                            if (g_tParam.ToolSn < 99)
+                            {
+                                g_tParam.ToolSn++;
+                            }
+                            else
+                            {
+                                g_tParam.ToolSn = 1;
+                            }
+                        }
+                    }
+                    else if (cursor == 3)
+                    {
+                        if (++g_tParam.StartRun >= 3)
+                        {
+                            g_tParam.StartRun = 0;
+                        }
+                    }                    
                     fRefresh = 1;
                     fSaveParam = 1;
                     break;
@@ -969,23 +1201,55 @@ void status_ProgModifyParam(void)
                     }
                     else if (cursor == 1)
                     {
-                        if (g_tParam.ResetType  == 0)
+                        if (g_tParam.FactoryId < 1 || g_tParam.FactoryId > 99)
                         {
-                            g_tParam.ResetType = 2;
+                            g_tParam.FactoryId = 1;
                         }
-                        else if (g_tParam.ResetType  == 2)
-                        {
-                            g_tParam.ResetType = 1;
-                        } 
                         else
                         {
-                            g_tParam.ResetType = 0;
+                            if (g_tParam.FactoryId > 1)
+                            {
+                                g_tParam.FactoryId--;
+                            }
+                            else
+                            {
+                                g_tParam.ToolSn = 99;
+                            }
                         }
                     } 
                     else if (cursor == 2)
                     {
-
-                    }                         
+                        if (g_tParam.ToolSn < 1 || g_tParam.ToolSn > 99)
+                        {
+                            g_tParam.ToolSn = 1;
+                        }
+                        else
+                        {
+                            if (g_tParam.ToolSn > 1)
+                            {
+                                g_tParam.ToolSn--;
+                            }
+                            else
+                            {
+                                g_tParam.ToolSn = 99;
+                            }
+                        }
+                    } 
+                    else if (cursor == 3)
+                    {
+                        if (g_tParam.StartRun == 0)
+                        {
+                            g_tParam.StartRun = 2;
+                        }
+                        else if (g_tParam.StartRun > 2)
+                        {
+                            g_tParam.StartRun = 1;
+                        }
+                        else
+                        {
+                            g_tParam.StartRun--;
+                        }                         
+                    }                     
                     fRefresh = 1;
                     fSaveParam = 1;
                     break;
@@ -1058,7 +1322,7 @@ static void DispProgCounter(void)
     {
         count = g_tProgIni.ProgramLimit - g_tProgIni.ProgrammedCount;
     }
-    if (g_tProgIni.ProgramLimit == 0 || count <= 0)
+    if (g_tProgIni.ProgramLimit == 0)
     {
         sprintf(buf, "剩余次数: 不限制");
     }

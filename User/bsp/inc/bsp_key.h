@@ -91,6 +91,8 @@ typedef enum
     KEY_2_LONG_UP,      /* 2键长按后的弹起 */  
     KEY_2_AUTO_UP,      /* 2键长按后自动发码 */
     KEY_2_DB_UP,        /* 2键双击 */    
+        
+    KEY_LCD_SLEEP,      /* 虚拟一次按键，禁止LCD休眠 */
 } KEY_ENUM;
 
 /* 按键FIFO用到变量 */
@@ -101,6 +103,7 @@ typedef struct
     uint8_t Read;               /* 缓冲区读指针1 */
     uint8_t Write;              /* 缓冲区写指针 */
     uint8_t Read2;              /* 缓冲区读指针2 */
+    uint8_t Read3;					/* 缓冲区读指针3 */
 } KEY_FIFO_T;
 
 /* 供外部调用的函数声明 */
@@ -109,9 +112,12 @@ void bsp_KeyScan10ms(void);
 void bsp_PutKey(uint8_t _KeyCode);
 uint8_t bsp_GetKey(void);
 uint8_t bsp_GetKey2(void);
+uint8_t bsp_GetKey3(void);
 uint8_t bsp_GetKeyState(KEY_ID_E _ucKeyID);
 void bsp_SetKeyParam(uint8_t _ucKeyID, uint16_t _LongTime, uint8_t _RepeatSpeed);
 void bsp_ClearKey(void);
+
+void bsp_LcdSleepEnable(uint8_t _mode);
 
 #endif
 

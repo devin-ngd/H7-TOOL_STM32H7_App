@@ -311,6 +311,21 @@ static void ST7789_ConfigGPIO(void)
 *    返 回 值: 无
 *********************************************************************************************************
 */
+void ST7789_DrawScreenHard(void)
+{
+    ST7789_SetDispWin(0, 0, 240, 240);
+
+	bsp_InitSPI5ParamFast();
+    LCD_RS_1();
+    LCD_CS_0();     /* 在DMA传输完毕后设置1 */
+	
+	wTransferState = 0; 
+        
+	HAL_SPI_Transmit_DMA(&hspi5, (uint8_t *)(0x30000000),  240 * 240);
+
+    while (wTransferState == 0){}  
+}
+    
 void ST7789_DrawScreen(void)
 {
  #if LCD_DMA_CIRCULE_MODE == 1
@@ -333,6 +348,7 @@ void ST7789_DrawScreen(void)
     }
 #else    
     static int32_t s_time1 = 0;
+    static uint8_t s_first_run = 0;     /* 上电第1次运行，准备好数据后开背光，避免短暂花屏 */
     
     if (s_DispRefresh == 0)
     {
@@ -343,24 +359,20 @@ void ST7789_DrawScreen(void)
     if (bsp_CheckRunTime(s_time1) < 50)
     {
          return;
-    }   
-    
-    /* 放到前面判断 */
-    while (wTransferState == 0){}    
+    }
         
     s_DispRefresh = 0;
     
-    ST7789_SetDispWin(0, 0, 240, 240);
-
-	bsp_InitSPI5ParamFast();
-    LCD_RS_1();
-    LCD_CS_0();     /* 在DMA传输完毕后设置1 */
-	
-	wTransferState = 0; 
-        
-	HAL_SPI_Transmit_DMA(&hspi5, (uint8_t *)(0x30000000),  240 * 240);
+    ST7789_DrawScreenHard();
         
     s_time1 = bsp_GetRunTime();
+        
+    if (s_first_run == 0)
+    {
+        s_first_run = 1;
+        
+        LCD_SetBackLight(BRIGHT_DEFAULT);   /* 打开背光 255 */
+    }
 #endif    
 }
 

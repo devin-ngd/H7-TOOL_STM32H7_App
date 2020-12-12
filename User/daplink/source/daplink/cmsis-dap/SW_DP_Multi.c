@@ -294,17 +294,52 @@ extern uint8_t GetParity(uint32_t data);
 */ 
 void MUL_SWD_GPIOConfig(void)
 {
-    EIO_D0_Config(ES_GPIO_OUT); 
-    EIO_D1_Config(ES_GPIO_IN);          /* 输入 */        
-    EIO_D2_Config(ES_GPIO_OUT);
-    EIO_D3_Config(ES_GPIO_OUT);
-    EIO_D4_Config(ES_GPIO_OUT);
-    EIO_D5_Config(ES_GPIO_OUT);
+    EIO_D0_Config(ES_GPIO_OUT);         /* reset */
+    EIO_D1_Config(ES_GPIO_IN);          /* 输入 */
+  
+    if (g_gMulSwd.Active[0] == 1)
+    {
+        EIO_D8_Config(ES_GPIO_SWD_OUT);     /* 用FMC口线做GPIO。因此FMC功能失效 */
+        EIO_D9_Config(ES_GPIO_SWD_OUT);     /* 用FMC口线做GPIO。因此FMC功能失效 */
+    }
+    if (g_gMulSwd.Active[1] == 1)
+    {
+        EIO_D5_Config(ES_GPIO_OUT);
+        EIO_D7_Config(ES_GPIO_SWD_OUT);     /* 用FMC口线做GPIO。因此FMC功能失效 */
+    }
+    if (g_gMulSwd.Active[2] == 1)
+    {
+        EIO_D4_Config(ES_GPIO_OUT);    
+        EIO_D6_Config(ES_GPIO_SWD_OUT);     /* 用FMC口线做GPIO。因此FMC功能失效 */
+    }
+    if (g_gMulSwd.Active[3] == 1)
+    {
+        EIO_D2_Config(ES_GPIO_OUT);
+        EIO_D3_Config(ES_GPIO_OUT);
+    }    
+}
+
+/*
+*********************************************************************************************************
+*    函 数 名: MUL_PORT_SWD_SETUP
+*    功能说明: MUL_swd_init()调用该函数。初始化4路SWD硬件GPIO，并设置初始状态
+*    形    参: 无
+*    返 回 值: 无
+*********************************************************************************************************
+*/ 
+void MUL_PORT_SWD_SETUP(void)
+{
+    //    Set SWCLK HIGH
+    //    Set SWDIO HIGH
+    //    Set RESET LOW  转接板有反相器三极管    
+    MUL_SWD_GPIOConfig();
+    MUL_RefreshGpioParam();
     
-    EIO_D6_Config(ES_GPIO_SWD_OUT);     /* 用FMC口线做GPIO。因此FMC功能失效 */
-    EIO_D7_Config(ES_GPIO_SWD_OUT);     /* 用FMC口线做GPIO。因此FMC功能失效 */
-    EIO_D8_Config(ES_GPIO_SWD_OUT);     /* 用FMC口线做GPIO。因此FMC功能失效 */
-    EIO_D9_Config(ES_GPIO_SWD_OUT);     /* 用FMC口线做GPIO。因此FMC功能失效 */
+    MUL_PIN_SWDIO_OUT_ENABLE();
+    MUL_PIN_SWDIO_OUT(1);
+    MUL_PIN_SWCLK_SET();
+    
+    //EIO_SetOutLevel(0, 0);    /* D0输出0V, 转接板RESET输出高 */
 }
 
 /*

@@ -14,9 +14,7 @@
 *********************************************************************************************************
 */
 
-#include "bsp.h"
-#include "param.h"
-#include "modbus_reg_addr.h"
+#include "includes.h"
 
 PARAM_T g_tParam;            /* 基本参数 */
 CALIB_T g_tCalib;            /* 校准参数 */
@@ -34,7 +32,6 @@ void LoadCalibParam(void);
 */
 void LoadParam(void)
 {
-
     /* 读取EEPROM中的参数 */
     ee_ReadBytes((uint8_t *)&g_tParam, PARAM_ADDR, sizeof(PARAM_T));
 
@@ -60,6 +57,18 @@ void LoadParam(void)
     g_tVar.MACaddr[5] = g_tVar.CPU_Sn[0] >> 0;
     
     LoadCalibParam();
+    
+    /* 固件升级新增参数的处理 */
+    {
+        if (g_tParam.DAP_TVCCVolt > 50)
+        {
+            g_tParam.DAP_TVCCVolt = 0;
+            g_tParam.DAP_BeepEn = 1;
+            bsp_GenRNG(&g_tParam.DAP_Sn, 1);
+            
+            SaveParam();
+        }
+    }
 }
 
 /*
@@ -148,8 +157,17 @@ void InitBaseParam(void)
     
     g_tParam.FileListFont24 = 0;        /* 1表示24点阵显示文件列表，0表示16点阵 */
     
-    g_tParam.ResetType = 0;             /* ARM芯片复位模式 */
+    g_tParam.ResetTypeNotUsed = 0;      /* ARM芯片复位模式 [废弃] */
     g_tParam.MultiProgMode = 4;         /* 多机烧录模式 */
+    
+	g_tParam.FactoryId = 1;				/* 工厂代码 */
+    g_tParam.ToolSn = 1;                /* 烧录器编号 */
+    
+    g_tParam.StartRun = 0;              /* 开机启动 */
+        
+    g_tParam.DAP_TVCCVolt = 0;
+    g_tParam.DAP_BeepEn = 1;
+    bsp_GenRNG(&g_tParam.DAP_Sn, 1);
     
     SaveParam();
 }
